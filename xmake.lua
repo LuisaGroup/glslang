@@ -1,24 +1,20 @@
 target("lc-glslang")
 set_basename("luisa-glslang")
 _config_project({
-    project_kind = "static",
-    batch_size = 64
+    project_kind = "static"
 })
 
 add_includedirs(".", {
     public = true
 })
 
-add_defines("ENABLE_SPIRV", {
-    public = true
-})
-add_defines("ENABLE_OPT=0", {
+add_defines("ENABLE_SPIRV", "ENABLE_OPT=0", {
     public = true
 })
 
 if is_plat("windows") then
     add_files("glslang/OSDependent/Windows/ossource.cpp")
-    add_defines("GLSLANG_OSINCLUDE_WIN32", {
+    add_defines("NOMINMAX", "UNICODE", "GLSLANG_OSINCLUDE_WIN32", {
         public = true
     })
 else
@@ -28,20 +24,24 @@ else
     })
 end
 
-add_files("glslang/CInterface/glslang_c_interface.cpp")
-add_files("glslang/GenericCodeGen/*.cpp")
-add_files("glslang/MachineIndependent/*.cpp")
-add_files("glslang/MachineIndependent/preprocessor/*.cpp")
-add_files("glslang/ResourceLimits/*.cpp")
-add_files("SPIRV/*.cpp")
-add_files("SPIRV/CInterface/*.cpp")
+add_files(
+    "glslang/CInterface/glslang_c_interface.cpp",
+    "glslang/GenericCodeGen/*.cpp",
+    "glslang/MachineIndependent/*.cpp",
+    "glslang/MachineIndependent/preprocessor/*.cpp",
+    "glslang/ResourceLimits/*.cpp",
+    "SPIRV/*.cpp",
+    "SPIRV/CInterface/*.cpp"
+)
 
-add_headerfiles("glslang/Public/*.h")
-add_headerfiles("glslang/Include/*.h")
-add_headerfiles("glslang/MachineIndependent/*.h")
-add_headerfiles("glslang/MachineIndependent/preprocessor/*.h")
-add_headerfiles("SPIRV/*.h")
-add_headerfiles("SPIRV/CInterface/*.h")
+add_headerfiles(
+    "glslang/Public/*.h",
+    "glslang/Include/*.h",
+    "glslang/MachineIndependent/*.h",
+    "glslang/MachineIndependent/preprocessor/*.h",
+    "SPIRV/*.h",
+    "SPIRV/CInterface/*.h"
+)
 
 if is_plat("linux", "macosx") then
     add_syslinks("pthread", {
