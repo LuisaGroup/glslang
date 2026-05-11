@@ -702,6 +702,7 @@ public:
     class If {
     public:
         If(Id condition, SelectionControlMask ctrl, Builder& builder);
+        If(Id condition, SelectionControlMask ctrl, Builder& builder, Block* thenBlock, Block* elseBlock, Block* mergeBlock);
         ~If() {}
 
         void makeBeginElse();

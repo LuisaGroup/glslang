@@ -4458,14 +4458,35 @@ Builder::If::If(Id cond, SelectionControlMask ctrl, Builder& gb) :
     builder.setBuildPoint(thenBlock);
 }
 
+Builder::If::If(Id cond, SelectionControlMask ctrl, Builder& gb, Block* thenB, Block* elseB, Block* mergeB) :
+    builder(gb),
+    condition(cond),
+    control(ctrl),
+    elseBlock(elseB),
+    thenBlock(thenB),
+    mergeBlock(mergeB)
+{
+    function = &builder.getBuildPoint()->getParent();
+    headerBlock = builder.getBuildPoint();
+    builder.createSelectionMerge(mergeBlock, control);
+    if (thenBlock) {
+        function->addBlock(thenBlock);
+        builder.setBuildPoint(thenBlock);
+    }
+}
+
 // Comments in header
 void Builder::If::makeBeginElse()
 {
-    // Close out the "then" by having it jump to the mergeBlock
-    builder.createBranch(true, mergeBlock);
+    if (!builder.getBuildPoint()->isTerminated()) {
+        // Close out the "then" by having it jump to the mergeBlock
+        builder.createBranch(true, mergeBlock);
+    }
 
-    // Make the first else block and add it to the function
-    elseBlock = new Block(builder.getUniqueId(), *function);
+    if (!elseBlock) {
+        // Make the first else block and add it to the function
+        elseBlock = new Block(builder.getUniqueId(), *function);
+    }
     function->addBlock(elseBlock);
 
     // Start building the else block
@@ -4475,8 +4496,10 @@ void Builder::If::makeBeginElse()
 // Comments in header
 void Builder::If::makeEndIf()
 {
-    // jump to the merge block
-    builder.createBranch(true, mergeBlock);
+    if (!builder.getBuildPoint()->isTerminated()) {
+        // jump to the merge block
+        builder.createBranch(true, mergeBlock);
+    }
 
     // Go back to the headerBlock and make the flow control split
     builder.setBuildPoint(headerBlock);
