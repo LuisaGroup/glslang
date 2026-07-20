@@ -457,6 +457,9 @@ public:
     Id makeFloatE5M2Constant(float fe5m2, bool specConstant = false);
     Id makeFloatE4M3Constant(float fe4m3, bool specConstant = false);
     Id makeFpConstant(Id type, double d, bool specConstant = false);
+    // Make a floating-point constant from its exact in-memory encoding. Bits
+    // above the scalar type's declared width are discarded before interning.
+    Id makeFpConstantFromBits(Id type, unsigned long long bits, bool specConstant = false);
 
     Id importNonSemanticShaderDebugInfoInstructions();
     // Ensure the NonSemantic.Shader.DebugInfo import string names at least `version`.

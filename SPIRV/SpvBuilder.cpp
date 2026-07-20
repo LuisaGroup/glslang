@@ -1979,61 +1979,56 @@ Id Builder::makeInt64Constant(Id typeId, unsigned long long value, bool specCons
     return resultId;
 }
 
-Id Builder::makeFloatConstant(float f, bool specConstant)
+Id Builder::makeFpConstantFromBits(Id typeId, unsigned long long bits, bool specConstant)
 {
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
-    Id typeId = makeFloatType(32);
-    union { float fl; unsigned int ui; } u;
-    u.fl = f;
-    unsigned value = u.ui;
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (! specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, value);
-        if (existing)
-            return existing;
+    if (!isFloatType(typeId)) {
+        assert(false);
+        return NoResult;
     }
 
-    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->addImmediateOperand(value);
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
-    module.mapInstruction(c);
+    const unsigned width = getScalarTypeWidth(typeId);
+    // SPIR-V packs all scalar constants up to 32 bits into one literal word.
+    // Canonicalize the unused high bits before lookup so they cannot affect
+    // either the emitted binary or constant interning.
+    switch (width) {
+    case 8:
+    case 16:
+    case 32:
+        bits &= (1ull << width) - 1ull;
+        break;
+    case 64:
+        break;
+    default:
+        assert(false);
+        return NoResult;
+    }
 
-    Id resultId = c->getResultId();
+    const Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
+    const unsigned op1 = static_cast<unsigned>(bits & 0xffffffffull);
+    const unsigned op2 = static_cast<unsigned>(bits >> 32);
+
+    // Regular constants are interned by exact type and exact payload.
+    // Specialization constants remain distinct so each may receive a SpecId.
     if (!specConstant) {
-        ScalarConstantKey key{ enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, value, 0 };
-        groupedScalarConstantResultIDs[key] = resultId;
-    }
-    return resultId;
-}
-
-Id Builder::makeDoubleConstant(double d, bool specConstant)
-{
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
-    Id typeId = makeFloatType(64);
-    union { double db; unsigned long long ull; } u;
-    u.db = d;
-    unsigned long long value = u.ull;
-    unsigned op1 = value & 0xFFFFFFFF;
-    unsigned op2 = value >> 32;
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (! specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, op1, op2);
+        Id existing = width == 64 ?
+                          findScalarConstant(Op::OpTypeFloat, opcode, typeId, op1, op2) :
+                          findScalarConstant(Op::OpTypeFloat, opcode, typeId, op1);
         if (existing)
             return existing;
     }
 
     Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->reserveOperands(2);
-    c->addImmediateOperand(op1);
-    c->addImmediateOperand(op2);
+    if (width == 64) {
+        c->reserveOperands(2);
+        c->addImmediateOperand(op1);
+        c->addImmediateOperand(op2);
+    } else {
+        c->addImmediateOperand(op1);
+    }
     constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
     module.mapInstruction(c);
 
-    Id resultId = c->getResultId();
+    const Id resultId = c->getResultId();
     if (!specConstant) {
         ScalarConstantKey key{ enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, op1, op2 };
         groupedScalarConstantResultIDs[key] = resultId;
@@ -2041,41 +2036,34 @@ Id Builder::makeDoubleConstant(double d, bool specConstant)
     return resultId;
 }
 
+Id Builder::makeFloatConstant(float f, bool specConstant)
+{
+    union { float fl; unsigned int ui; } u;
+    u.fl = f;
+    return makeFpConstantFromBits(makeFloatType(32), u.ui, specConstant);
+}
+
+Id Builder::makeDoubleConstant(double d, bool specConstant)
+{
+    union { double db; unsigned long long ull; } u;
+    u.db = d;
+    return makeFpConstantFromBits(makeFloatType(64), u.ull, specConstant);
+}
+
 Id Builder::makeFloat16Constant(float f16, bool specConstant)
 {
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
     Id typeId = makeFloatType(16);
 
     spvutils::HexFloat<spvutils::FloatProxy<float>> fVal(f16);
     spvutils::HexFloat<spvutils::FloatProxy<spvutils::Float16>> f16Val(0);
     fVal.castTo(f16Val, spvutils::kRoundToZero);
 
-    unsigned value = f16Val.value().getAsFloat().get_value();
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (!specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, value);
-        if (existing)
-            return existing;
-    }
-
-    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->addImmediateOperand(value);
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
-    module.mapInstruction(c);
-
-    Id resultId = c->getResultId();
-    if (!specConstant) {
-        ScalarConstantKey key{ enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, value, 0 };
-        groupedScalarConstantResultIDs[key] = resultId;
-    }
-    return resultId;
+    const unsigned value = f16Val.value().getAsFloat().get_value();
+    return makeFpConstantFromBits(typeId, value, specConstant);
 }
 
 Id Builder::makeBFloat16Constant(float bf16, bool specConstant)
 {
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
     Id typeId = makeBFloat16Type();
 
     union {
@@ -2085,91 +2073,32 @@ Id Builder::makeBFloat16Constant(float bf16, bool specConstant)
     un.f = bf16;
 
     // take high 16b of fp32 value. This is effectively round-to-zero, other than certain NaNs.
-    unsigned value = un.u >> 16;
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (!specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, value);
-        if (existing)
-            return existing;
-    }
-
-    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->addImmediateOperand(value);
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
-    module.mapInstruction(c);
-
-    Id resultId = c->getResultId();
-    if (!specConstant) {
-        ScalarConstantKey key{ enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, value, 0 };
-        groupedScalarConstantResultIDs[key] = resultId;
-    }
-    return resultId;
+    const unsigned value = un.u >> 16;
+    return makeFpConstantFromBits(typeId, value, specConstant);
 }
 
 Id Builder::makeFloatE5M2Constant(float fe5m2, bool specConstant)
 {
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
     Id typeId = makeFloatE5M2Type();
 
     spvutils::HexFloat<spvutils::FloatProxy<float>> fVal(fe5m2);
     spvutils::HexFloat<spvutils::FloatProxy<spvutils::FloatE5M2>> fe5m2Val(0);
     fVal.castTo(fe5m2Val, spvutils::kRoundToZero);
 
-    unsigned value = fe5m2Val.value().getAsFloat().get_value();
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (!specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, value);
-        if (existing)
-            return existing;
-    }
-
-    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->addImmediateOperand(value);
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
-    module.mapInstruction(c);
-
-    Id resultId = c->getResultId();
-    if (!specConstant) {
-        ScalarConstantKey key{enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, value, 0};
-        groupedScalarConstantResultIDs[key] = resultId;
-    }
-    return resultId;
+    const unsigned value = fe5m2Val.value().getAsFloat().get_value();
+    return makeFpConstantFromBits(typeId, value, specConstant);
 }
 
 Id Builder::makeFloatE4M3Constant(float fe4m3, bool specConstant)
 {
-    Op opcode = specConstant ? Op::OpSpecConstant : Op::OpConstant;
     Id typeId = makeFloatE4M3Type();
 
     spvutils::HexFloat<spvutils::FloatProxy<float>> fVal(fe4m3);
     spvutils::HexFloat<spvutils::FloatProxy<spvutils::FloatE4M3>> fe4m3Val(0);
     fVal.castTo(fe4m3Val, spvutils::kRoundToZero);
 
-    unsigned value = fe4m3Val.value().getAsFloat().get_value();
-
-    // See if we already made it. Applies only to regular constants, because specialization constants
-    // must remain distinct for the purpose of applying a SpecId decoration.
-    if (!specConstant) {
-        Id existing = findScalarConstant(Op::OpTypeFloat, opcode, typeId, value);
-        if (existing)
-            return existing;
-    }
-
-    Instruction* c = new Instruction(getUniqueId(), typeId, opcode);
-    c->addImmediateOperand(value);
-    constantsTypesGlobals.push_back(std::unique_ptr<Instruction>(c));
-    module.mapInstruction(c);
-
-    Id resultId = c->getResultId();
-    if (!specConstant) {
-        ScalarConstantKey key{enumCast(Op::OpTypeFloat), enumCast(opcode), typeId, value, 0};
-        groupedScalarConstantResultIDs[key] = resultId;
-    }
-    return resultId;
+    const unsigned value = fe4m3Val.value().getAsFloat().get_value();
+    return makeFpConstantFromBits(typeId, value, specConstant);
 }
 
 Id Builder::makeFpConstant(Id type, double d, bool specConstant)

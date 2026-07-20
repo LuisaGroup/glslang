@@ -95,7 +95,11 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
                 case StorageClass::PushConstant:
                     break;
                 default:
-                    addCapability(Capability::Int8);
+                    // Float8 loads and stores are covered by Float8EXT. Int8
+                    // is only required when the scalar type is integer; adding
+                    // it for OpTypeFloat 8 overstates the device contract.
+                    if (basicTypeOp == Op::OpTypeInt)
+                        addCapability(Capability::Int8);
                     break;
                 }
             } else if (width == 16) {

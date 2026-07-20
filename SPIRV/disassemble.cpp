@@ -99,6 +99,9 @@ protected:
     SpirvStream(const SpirvStream&);
     SpirvStream& operator=(const SpirvStream&);
     Op getOpCode(int id) const { return idInstruction[id] ? (Op)(stream[idInstruction[id]] & OpCodeMask) : Op::OpNop; }
+    unsigned getCompleteInstructionWordCount(unsigned int instruction) const;
+    Id getTypeId(Id id) const;
+    unsigned getScalarIntegerWidth(Id id) const;
 
     // Output methods
     void outputIndent();
@@ -176,26 +179,35 @@ void SpirvStream::processInstructions()
         unsigned int firstWord = stream[word];
         unsigned wordCount = firstWord >> WordCountShift;
         Op opCode = (Op)(firstWord & OpCodeMask);
-        int nextInst = word + wordCount;
-        ++word;
 
         // Presence of full instruction
-        if (nextInst > size)
+        if (wordCount == 0)
+            Kill(out, "stream instruction has zero word count");
+        if (wordCount > static_cast<unsigned>(size - instructionStart))
             Kill(out, "stream instruction terminated too early");
+
+        const auto hasType = InstructionDesc[enumCast(opCode)].hasType();
+        const auto hasResult = InstructionDesc[enumCast(opCode)].hasResult();
+        const unsigned requiredPrefixWords = 1u + hasType + hasResult;
+        if (wordCount < requiredPrefixWords)
+            Kill(out, "stream instruction is missing its type or result operand");
+
+        int nextInst = word + wordCount;
+        ++word;
 
         // Base for computing number of operands; will be updated as more is learned
         unsigned numOperands = wordCount - 1;
 
         // Type <id>
         Id typeId = 0;
-        if (InstructionDesc[enumCast(opCode)].hasType()) {
+        if (hasType) {
             typeId = stream[word++];
             --numOperands;
         }
 
         // Result <id>
         Id resultId = 0;
-        if (InstructionDesc[enumCast(opCode)].hasResult()) {
+        if (hasResult) {
             resultId = stream[word++];
             --numOperands;
 
@@ -214,6 +226,64 @@ void SpirvStream::processInstructions()
             word = nextInst;
         }
         out << std::endl;
+    }
+}
+
+unsigned SpirvStream::getCompleteInstructionWordCount(unsigned int instruction) const
+{
+    if (instruction >= stream.size())
+        return 0;
+
+    const unsigned int wordCount = stream[instruction] >> WordCountShift;
+    if (wordCount == 0 || wordCount > stream.size() - instruction)
+        return 0;
+    return wordCount;
+}
+
+Id SpirvStream::getTypeId(Id id) const
+{
+    if (id >= bound || idInstruction[id] == 0)
+        return 0;
+
+    const unsigned int instruction = idInstruction[id];
+    const unsigned int wordCount = getCompleteInstructionWordCount(instruction);
+    if (wordCount == 0)
+        return 0;
+    const Op opCode = (Op)(stream[instruction] & OpCodeMask);
+    const auto hasType = InstructionDesc[enumCast(opCode)].hasType();
+    const auto hasResult = InstructionDesc[enumCast(opCode)].hasResult();
+    const unsigned int requiredPrefixWords = 1u + hasType + hasResult;
+    if (!hasType || !hasResult || wordCount < requiredPrefixWords)
+        return 0;
+
+    const Id typeId = stream[instruction + 1];
+    const Id resultId = stream[instruction + 2];
+    return resultId == id ? typeId : 0;
+}
+
+unsigned SpirvStream::getScalarIntegerWidth(Id id) const
+{
+    const Id typeId = getTypeId(id);
+    if (typeId == 0 || typeId >= bound || idInstruction[typeId] == 0)
+        return 0;
+
+    const unsigned int instruction = idInstruction[typeId];
+    const unsigned int wordCount = getCompleteInstructionWordCount(instruction);
+    if (wordCount != 4)
+        return 0;
+    const Op opCode = (Op)(stream[instruction] & OpCodeMask);
+    if (opCode != Op::OpTypeInt || stream[instruction + 1] != typeId)
+        return 0;
+
+    const unsigned int width = stream[instruction + 2];
+    switch (width) {
+    case 8:
+    case 16:
+    case 32:
+    case 64:
+        return width;
+    default:
+        return 0;
     }
 }
 
@@ -356,6 +426,16 @@ void SpirvStream::disassembleInstruction(Id resultId, Id /*typeId*/, Op opCode, 
 {
     // Process the opcode
 
+    int switchLiteralWords = 1;
+    if (opCode == Op::OpSwitch) {
+        if (numOperands < 2)
+            Kill(out, "OpSwitch is missing its selector or default target");
+        const unsigned selectorWidth = getScalarIntegerWidth(stream[word]);
+        if (selectorWidth == 0)
+            Kill(out, "OpSwitch selector does not have a scalar integer type");
+        switchLiteralWords = static_cast<int>((selectorWidth - 1) / 32 + 1);
+    }
+
     out << (OpcodeString((int)opCode) + 2);  // leave out the "Op"
 
     if (opCode == Op::OpLoopMerge || opCode == Op::OpSelectionMerge)
@@ -372,6 +452,8 @@ void SpirvStream::disassembleInstruction(Id resultId, Id /*typeId*/, Op opCode, 
         if (resultId != 0 && idDescriptor[resultId].size() == 0) {
             switch (opCode) {
             case Op::OpTypeInt:
+                if (numOperands != 2)
+                    Kill(out, "OpTypeInt has an invalid word count");
                 switch (stream[word]) {
                 case 8:  idDescriptor[resultId] = "int8_t"; break;
                 case 16: idDescriptor[resultId] = "int16_t"; break;
@@ -522,15 +604,17 @@ void SpirvStream::disassembleInstruction(Id resultId, Id /*typeId*/, Op opCode, 
             return;
         case OperandVariableLiteralId:
             while (numOperands > 0) {
+                if (numOperands < switchLiteralWords + 1)
+                    Kill(out, "OpSwitch case is missing literal words or a target label");
                 out << std::endl;
                 outputResultId(0);
                 outputTypeId(0);
                 outputIndent();
                 out << "     case ";
-                disassembleImmediates(1);
+                disassembleImmediates(switchLiteralWords);
                 out << ": ";
                 disassembleIds(1);
-                numOperands -= 2;
+                numOperands -= switchLiteralWords + 1;
             }
             return;
         case OperandLiteralNumber:
