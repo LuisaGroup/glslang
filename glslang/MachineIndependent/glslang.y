@@ -1384,6 +1384,7 @@ layout_qualifier_id_list
     }
     | layout_qualifier_id_list COMMA layout_qualifier_id {
         $$ = $1;
+        parseContext.checkRepeatedLocalSize($3.loc, $$.shaderQualifiers, $3.shaderQualifiers);
         $$.shaderQualifiers.merge($3.shaderQualifiers);
         parseContext.mergeObjectLayoutQualifiers($$.qualifier, $3.qualifier, false);
     }
@@ -3903,7 +3904,7 @@ struct_declaration_list
         for (unsigned int i = 0; i < $2->size(); ++i) {
             for (unsigned int j = 0; j < $$->size(); ++j) {
                 if ((*$$)[j].type->getFieldName() == (*$2)[i].type->getFieldName())
-                    parseContext.error((*$2)[i].loc, "duplicate member name:", "", (*$2)[i].type->getFieldName().c_str());
+                    parseContext.error((*$2)[i].loc, "duplicate member name:", "", "%s", (*$2)[i].type->getFieldName().c_str());
             }
             $$->push_back((*$2)[i]);
         }
@@ -3955,7 +3956,7 @@ struct_declaration_no_inline_block_list
         for (unsigned int i = 0; i < $2->size(); ++i) {
             for (unsigned int j = 0; j < $$->size(); ++j) {
                 if ((*$$)[j].type->getFieldName() == (*$2)[i].type->getFieldName())
-                    parseContext.error((*$2)[i].loc, "duplicate member name:", "", (*$2)[i].type->getFieldName().c_str());
+                    parseContext.error((*$2)[i].loc, "duplicate member name:", "", "%s", (*$2)[i].type->getFieldName().c_str());
             }
             $$->push_back((*$2)[i]);
         }
@@ -4473,7 +4474,7 @@ function_definition
     compound_statement_no_new_scope {
         //   May be best done as post process phase on intermediate code
         if (parseContext.currentFunctionType->getBasicType() != EbtVoid && ! parseContext.functionReturnsValue)
-            parseContext.error($1.loc, "function does not return a value:", "", $1.function->getName().c_str());
+            parseContext.error($1.loc, "function does not return a value:", "", "%s", $1.function->getName().c_str());
         parseContext.symbolTable.pop(&parseContext.defaultPrecision[0]);
         $$ = parseContext.intermediate.growAggregate($1.intermNode, $3);
         $$->getAsAggregate()->setLinkType($1.function->getLinkType());

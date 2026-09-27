@@ -180,7 +180,7 @@ bool TParseContextBase::lValueErrorCheck(const TSourceLoc& loc, const char* op, 
     }
 
     if (message == nullptr && binaryNode == nullptr && symNode == nullptr) {
-        error(loc, " l-value required", op, "", "");
+        error(loc, " l-value required", op, "");
 
         return true;
     }
@@ -201,7 +201,7 @@ bool TParseContextBase::lValueErrorCheck(const TSourceLoc& loc, const char* op, 
             default:
                 break;
             }
-            error(loc, " l-value required", op, "", "");
+            error(loc, " l-value required", op, "");
 
             return true;
         }
@@ -216,7 +216,8 @@ bool TParseContextBase::lValueErrorCheck(const TSourceLoc& loc, const char* op, 
     if (symNode)
         error(loc, " l-value required", op, "\"%s\" (%s)", symbol, message);
     else
-        if (binaryNode && binaryNode->getAsOperator()->getOp() == EOpIndexDirectStruct)
+        if (binaryNode && binaryNode->getAsOperator()->getOp() == EOpIndexDirectStruct &&
+            leftMostTypeNode != nullptr && leftMostTypeNode->getAsSymbolNode() != nullptr)
             if(IsAnonymous(leftMostTypeNode->getAsSymbolNode()->getName()))
                 error(loc, " l-value required", op, "\"%s\" (%s)", leftMostTypeNode->getAsSymbolNode()->getAccessName().c_str(), message);
             else
@@ -240,14 +241,15 @@ void TParseContextBase::rValueErrorCheck(const TSourceLoc& loc, const char* op, 
         const TIntermTyped* leftMostTypeNode = TIntermediate::traverseLValueBase(node, true);
 
         if (symNode != nullptr)
-            error(loc, "can't read from writeonly object: ", op, symNode->getName().c_str());
+            error(loc, "can't read from writeonly object: ", op, "%s", symNode->getName().c_str());
         else if (binaryNode &&
                 (binaryNode->getAsOperator()->getOp() == EOpIndexDirectStruct ||
-                 binaryNode->getAsOperator()->getOp() == EOpIndexDirect))
+                 binaryNode->getAsOperator()->getOp() == EOpIndexDirect) &&
+                leftMostTypeNode != nullptr && leftMostTypeNode->getAsSymbolNode() != nullptr)
             if(IsAnonymous(leftMostTypeNode->getAsSymbolNode()->getName()))
-                error(loc, "can't read from writeonly object: ", op, leftMostTypeNode->getAsSymbolNode()->getAccessName().c_str());
+                error(loc, "can't read from writeonly object: ", op, "%s", leftMostTypeNode->getAsSymbolNode()->getAccessName().c_str());
             else
-                error(loc, "can't read from writeonly object: ", op, leftMostTypeNode->getAsSymbolNode()->getName().c_str());
+                error(loc, "can't read from writeonly object: ", op, "%s", leftMostTypeNode->getAsSymbolNode()->getName().c_str());
         else
             error(loc, "can't read from writeonly object: ", op, "");
 
@@ -278,6 +280,42 @@ void TParseContextBase::trackLinkage(TSymbol& symbol)
 {
     if (!parsingBuiltins)
         linkageSymbols.push_back(&symbol);
+}
+
+// These add a member to a block. Other member extensions, like GL_EXT_geometry_point_size,
+// only allow writing a member that is in the block either way, so they must be left alone.
+static bool extensionAddsMember(const char* extension)
+{
+    return strcmp(extension, E_GL_EXT_clip_cull_distance) == 0 ||
+           strcmp(extension, E_GL_ARB_cull_distance) == 0;
+}
+
+// Hide block members added by an extension this compile did not turn on. Downstream reads
+// the type, not the symbol table's per-member extension lists, so the type has to lose them.
+void TParseContextBase::hideUnavailableMembers(TSymbol& symbol)
+{
+    TVariable* block = symbol.getAsVariable();
+    if (block == nullptr) {
+        TAnonMember* anon = symbol.getAsAnonMember();
+        if (anon == nullptr)
+            return;
+        block = &anon->getAnonContainer();
+    }
+    if (block->isReadOnly() || ! block->hasMemberExtensions())
+        return;
+
+    TTypeList& members = *block->getWritableType().getWritableStruct();
+    for (int member = 0; member < (int)members.size(); ++member) {
+        const int numExtensions = block->getNumMemberExtensions(member);
+        if (numExtensions == 0)
+            continue;
+        const char* const* extensions = block->getMemberExtensions(member);
+        bool addsMember = true;
+        for (int e = 0; e < numExtensions; ++e)
+            addsMember = addsMember && extensionAddsMember(extensions[e]);
+        if (addsMember && ! extensionsTurnedOn(numExtensions, extensions))
+            members[member].type->hideMember();
+    }
 }
 
 // Ensure index is in bounds, correct if necessary.
@@ -660,7 +698,7 @@ void TParseContextBase::growGlobalUniformBlock(const TSourceLoc& loc, TType& mem
         if (memberType != symbol->getType()) {
             TString err;
             err += "Redeclaration: already declared as \"" + symbol->getType().getCompleteString() + "\"";
-            error(loc, "", memberName.c_str(), err.c_str());
+            error(loc, "", memberName.c_str(), "%s", err.c_str());
         }
         return;
     }
@@ -775,8 +813,10 @@ void TParseContextBase::finish()
 
     // Transfer the linkage symbols to AST nodes, preserving order.
     TIntermAggregate* linkage = new TIntermAggregate;
-    for (auto i = linkageSymbols.begin(); i != linkageSymbols.end(); ++i)
+    for (auto i = linkageSymbols.begin(); i != linkageSymbols.end(); ++i) {
+        hideUnavailableMembers(**i);
         intermediate.addSymbolLinkageNode(linkage, **i);
+    }
     intermediate.addSymbolLinkageNodes(linkage, getLanguage(), symbolTable);
 }
 

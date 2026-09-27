@@ -105,6 +105,7 @@ public:
     virtual const TFunction* getAsFunction() const { return nullptr; }
     virtual TVariable* getAsVariable() { return nullptr; }
     virtual const TVariable* getAsVariable() const { return nullptr; }
+    virtual TAnonMember* getAsAnonMember() { return nullptr; }
     virtual const TAnonMember* getAsAnonMember() const { return nullptr; }
     virtual const TType& getType() const = 0;
     virtual TType& getWritableType() = 0;
@@ -200,6 +201,12 @@ public:
         return memberExtensions == nullptr ? 0 : (int)(*memberExtensions)[member].size();
     }
     virtual const char** getMemberExtensions(int member) const { return (*memberExtensions)[member].data(); }
+    // Keep the per-member lists aligned with the members when one is erased.
+    virtual void eraseMemberExtensions(int member)
+    {
+        if (memberExtensions != nullptr)
+            memberExtensions->erase(memberExtensions->begin() + member);
+    }
 
     virtual void dump(TInfoSink& infoSink, bool complete = false) const;
 
@@ -398,7 +405,9 @@ public:
     virtual TAnonMember* clone() const override;
     virtual ~TAnonMember() { }
 
+    virtual TAnonMember* getAsAnonMember() override { return this; }
     virtual const TAnonMember* getAsAnonMember() const override { return this; }
+    virtual TVariable& getAnonContainer() { return anonContainer; }
     virtual const TVariable& getAnonContainer() const { return anonContainer; }
     virtual unsigned int getMemberNumber() const { return memberNumber; }
 

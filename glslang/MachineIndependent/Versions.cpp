@@ -217,7 +217,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_sparse_texture2]              = EBhDisable;
     extensionBehavior[E_GL_ARB_sparse_texture_clamp]         = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_stencil_export]        = EBhDisable;
-//    extensionBehavior[E_GL_ARB_cull_distance]                = EBhDisable;    // present for 4.5, but need extension control over block members
+    extensionBehavior[E_GL_ARB_cull_distance]                = EBhDisable;
     extensionBehavior[E_GL_ARB_post_depth_coverage]          = EBhDisable;
     extensionBehavior[E_GL_ARB_shader_viewport_layer_array]  = EBhDisable;
     extensionBehavior[E_GL_ARB_fragment_shader_interlock]    = EBhDisable;
@@ -353,6 +353,7 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_OES_shader_image_atomic]                  = EBhDisable;
     extensionBehavior[E_GL_OES_shader_multisample_interpolation]     = EBhDisable;
     extensionBehavior[E_GL_OES_texture_storage_multisample_2d_array] = EBhDisable;
+    extensionBehavior[E_GL_EXT_clip_cull_distance]                   = EBhDisable;
     extensionBehavior[E_GL_EXT_geometry_shader]                      = EBhDisable;
     extensionBehavior[E_GL_EXT_geometry_point_size]                  = EBhDisable;
     extensionBehavior[E_GL_EXT_gpu_shader5]                          = EBhDisable;
@@ -512,6 +513,7 @@ void TParseVersions::getPreamble(std::string& preamble)
 
             if (version >= 300) {
                 preamble += "#define GL_NV_shader_noperspective_interpolation 1\n";
+                preamble += "#define GL_EXT_clip_cull_distance 1\n";
             }
             if (version >= 310) {
                 preamble += "#define GL_EXT_null_initializer 1\n";
@@ -550,7 +552,7 @@ void TParseVersions::getPreamble(std::string& preamble)
             "#define GL_ARB_sample_shading 1\n"
             "#define GL_ARB_shader_image_size 1\n"
             "#define GL_ARB_shading_language_packing 1\n"
-//            "#define GL_ARB_cull_distance 1\n"    // present for 4.5, but need extension control over block members
+            "#define GL_ARB_cull_distance 1\n"
             "#define GL_ARB_post_depth_coverage 1\n"
             "#define GL_ARB_fragment_shader_interlock 1\n"
             "#define GL_ARB_uniform_buffer_object 1\n"
@@ -839,7 +841,7 @@ const char* StageName(EShLanguage stage)
 void TParseVersions::requireStage(const TSourceLoc& loc, EShLanguageMask languageMask, const char* featureDesc)
 {
     if (((1 << language) & languageMask) == 0)
-        error(loc, "not supported in this stage:", featureDesc, StageName(language));
+        error(loc, "not supported in this stage:", featureDesc, "%s", StageName(language));
 }
 
 // If only one stage supports a feature, this can be called.  But, all supporting stages
@@ -861,7 +863,7 @@ void TParseVersions::requireStage(const TSourceLoc& loc, EShLanguage stage, cons
 void TParseVersions::requireProfile(const TSourceLoc& loc, int profileMask, const char* featureDesc)
 {
     if (! (profile & profileMask))
-        error(loc, "not supported with this profile:", featureDesc, ProfileName(profile));
+        error(loc, "not supported with this profile:", featureDesc, "%s", ProfileName(profile));
 }
 
 //
@@ -940,12 +942,9 @@ void TParseVersions::checkDeprecated(const TSourceLoc& loc, int profileMask, int
 void TParseVersions::requireNotRemoved(const TSourceLoc& loc, int profileMask, int removedVersion, const char* featureDesc)
 {
     if (profile & profileMask) {
-        if (version >= removedVersion) {
-            const int maxSize = 60;
-            char buf[maxSize];
-            snprintf(buf, maxSize, "%s profile; removed in version %d", ProfileName(profile), removedVersion);
-            error(loc, "no longer supported in", featureDesc, buf);
-        }
+        if (version >= removedVersion)
+            error(loc, "no longer supported in", featureDesc, "%s profile; removed in version %d",
+                  ProfileName(profile), removedVersion);
     }
 }
 
@@ -973,6 +972,9 @@ bool TParseVersions::checkExtensionsRequested(const TSourceLoc& loc, int numExte
             infoSink.info.message(EPrefixWarning,
                                   ("extension " + TString(extensions[i]) + " is being used for " + featureDesc).c_str(),
                                   loc, messages & EShMsgAbsolutePath, messages & EShMsgDisplayErrorColumn);
+            // "#extension all : warn" sets the behavior without naming the extension, so the
+            // back end only learns the feature is in use here.
+            intermediate.addRequestedExtension(extensions[i]);
             warned = true;
         }
     }
@@ -993,7 +995,7 @@ void TParseVersions::requireExtensions(const TSourceLoc& loc, int numExtensions,
 
     // If we get this far, give errors explaining what extensions are needed
     if (numExtensions == 1)
-        error(loc, "required extension not requested:", featureDesc, extensions[0]);
+        error(loc, "required extension not requested:", featureDesc, "%s", extensions[0]);
     else {
         error(loc, "required extension not requested:", featureDesc, "Possible extensions include:");
         for (int i = 0; i < numExtensions; ++i)
@@ -1013,7 +1015,7 @@ void TParseVersions::ppRequireExtensions(const TSourceLoc& loc, int numExtension
 
     // If we get this far, give errors explaining what extensions are needed
     if (numExtensions == 1)
-        ppError(loc, "required extension not requested:", featureDesc, extensions[0]);
+        ppError(loc, "required extension not requested:", featureDesc, "%s", extensions[0]);
     else {
         ppError(loc, "required extension not requested:", featureDesc, "Possible extensions include:");
         for (int i = 0; i < numExtensions; ++i)
@@ -1069,7 +1071,7 @@ void TParseVersions::updateExtensionBehavior(int line, const char* extension, co
     else if (! strcmp("warn", behaviorString))
         behavior = EBhWarn;
     else {
-        error(getCurrentLoc(), "behavior not supported:", "#extension", behaviorString);
+        error(getCurrentLoc(), "behavior not supported:", "#extension", "%s", behaviorString);
         return;
     }
     bool on = behavior != EBhDisable;
@@ -1195,12 +1197,12 @@ void TParseVersions::updateExtensionBehavior(const char* extension, TExtensionBe
         if (iter == extensionBehavior.end()) {
             switch (behavior) {
             case EBhRequire:
-                error(getCurrentLoc(), "extension not supported:", "#extension", extension);
+                error(getCurrentLoc(), "extension not supported:", "#extension", "%s", extension);
                 break;
             case EBhEnable:
             case EBhWarn:
             case EBhDisable:
-                warn(getCurrentLoc(), "extension not supported:", "#extension", extension);
+                warn(getCurrentLoc(), "extension not supported:", "#extension", "%s", extension);
                 break;
             default:
                 assert(0 && "unexpected behavior");
@@ -1209,7 +1211,7 @@ void TParseVersions::updateExtensionBehavior(const char* extension, TExtensionBe
             return;
         } else {
             if (iter->second == EBhDisablePartial)
-                warn(getCurrentLoc(), "extension is only partially supported:", "#extension", extension);
+                warn(getCurrentLoc(), "extension is only partially supported:", "#extension", "%s", extension);
             if (behavior != EBhDisable)
                 intermediate.addRequestedExtension(extension);
             iter->second = behavior;
@@ -1227,7 +1229,7 @@ void TParseVersions::checkExtensionStage(const TSourceLoc& loc, const char * con
         profileRequires(loc, ECoreProfile, 450, nullptr, "#extension GL_NV_mesh_shader");
         profileRequires(loc, EEsProfile, 320, nullptr, "#extension GL_NV_mesh_shader");
         if (extensionTurnedOn(E_GL_EXT_mesh_shader)) {
-            error(loc, "GL_EXT_mesh_shader is already turned on, and not allowed with", "#extension", extension);
+            error(loc, "GL_EXT_mesh_shader is already turned on, and not allowed with", "#extension", "%s", extension);
         }
     }
     else if (strcmp(extension, "GL_EXT_mesh_shader") == 0) {
@@ -1236,7 +1238,7 @@ void TParseVersions::checkExtensionStage(const TSourceLoc& loc, const char * con
         profileRequires(loc, ECoreProfile, 450, nullptr, "#extension GL_EXT_mesh_shader");
         profileRequires(loc, EEsProfile, 320, nullptr, "#extension GL_EXT_mesh_shader");
         if (extensionTurnedOn(E_GL_NV_mesh_shader)) {
-            error(loc, "GL_NV_mesh_shader is already turned on, and not allowed with", "#extension", extension);
+            error(loc, "GL_NV_mesh_shader is already turned on, and not allowed with", "#extension", "%s", extension);
         }
     }
 }
