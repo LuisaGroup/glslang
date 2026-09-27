@@ -49,6 +49,16 @@
 
 #include "spirv.hpp11"
 
+// vstd::IOperatorNewBase routes spv::Instruction's new/delete through the
+// luisa allocator. LuisaCompute builds instructions with luisa::make_unique
+// (the eastl/mimalloc default allocator) and hands them to glslang, which owns
+// them through std::unique_ptr whose default deleter plain-deletes the
+// instruction. Without the class-specific operators that would pair a
+// mimalloc allocation with the system free; with them, every delete of an
+// instruction (std or eastl deleter, glslang-internal or not) goes back to the
+// same allocator the object came from.
+#include <luisa/vstl/meta_lib.h>
+
 #include <algorithm>
 #include <cassert>
 #include <functional>
@@ -96,7 +106,7 @@ struct IdImmediate {
 // SPIR-V IR instruction.
 //
 
-class Instruction {
+class Instruction : public vstd::IOperatorNewBase {
 public:
     Instruction(Id resultId, Id typeId, Op opCode) : resultId(resultId), typeId(typeId), opCode(opCode), block(nullptr) { }
     explicit Instruction(Op opCode) : resultId(NoResult), typeId(NoType), opCode(opCode), block(nullptr) { }
