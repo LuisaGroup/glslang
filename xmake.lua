@@ -8,10 +8,17 @@ add_includedirs(".", {
     public = true
 })
 
--- spvIR.h's spv::Instruction inherits vstd::IOperatorNewBase, so glslang needs
--- the luisa/EASTL headers (exposed publicly by lc-core) and everything that
--- links glslang needs the luisa allocator the class-specific operators call.
-add_deps("lc-core")
+-- LUISA_VSTL trigger: when enabled, spvIR.h's spv::Instruction inherits
+-- vstd::IOperatorNewBase, so glslang needs the luisa/EASTL headers (exposed
+-- publicly by lc-core) and everything that links glslang needs the luisa
+-- allocator the class-specific operators call. Enabled for LuisaCompute.
+local LUISA_VSTL = true
+if LUISA_VSTL then
+    add_deps("lc-core")
+    add_defines("LUISA_VSTL", {
+        public = true
+    })
+end
 
 add_defines("ENABLE_SPIRV", "ENABLE_OPT=0", {
     public = true

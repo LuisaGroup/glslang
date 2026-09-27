@@ -57,7 +57,10 @@
 // mimalloc allocation with the system free; with them, every delete of an
 // instruction (std or eastl deleter, glslang-internal or not) goes back to the
 // same allocator the object came from.
+// Enabled only when the build defines LUISA_VSTL (see xmake.lua / CMakeLists.txt).
+#ifdef LUISA_VSTL
 #include <luisa/vstl/meta_lib.h>
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -106,7 +109,11 @@ struct IdImmediate {
 // SPIR-V IR instruction.
 //
 
-class Instruction : public vstd::IOperatorNewBase {
+class Instruction
+#ifdef LUISA_VSTL
+    : public vstd::IOperatorNewBase
+#endif
+{
 public:
     Instruction(Id resultId, Id typeId, Op opCode) : resultId(resultId), typeId(typeId), opCode(opCode), block(nullptr) { }
     explicit Instruction(Op opCode) : resultId(NoResult), typeId(NoType), opCode(opCode), block(nullptr) { }

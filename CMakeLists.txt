@@ -126,6 +126,10 @@ endif()
 
 option(ENABLE_PCH "Enables Precompiled header" ON)
 
+# LuisaCompute trigger: route spv::Instruction new/delete through the luisa
+# allocator (vstd::IOperatorNewBase). Requires linking luisa-compute-core.
+option(LUISA_VSTL "Build glslang against LuisaCompute vstl allocator" OFF)
+
 if(ENABLE_SPIRV)
     add_compile_definitions(ENABLE_SPIRV)
 endif()
@@ -331,6 +335,11 @@ if(ENABLE_SPIRV)
     add_subdirectory(SPIRV)
 endif()
 add_subdirectory(glslang)
+if(LUISA_VSTL)
+    # spv::Instruction (SPIRV/spvIR.h) inherits vstd::IOperatorNewBase; the
+    # parent project links the luisa core/EASTL dependency under this trigger.
+    target_compile_definitions(glslang PUBLIC LUISA_VSTL)
+endif()
 if(ENABLE_GLSLANG_BINARIES)
     add_subdirectory(StandAlone)
 endif()
