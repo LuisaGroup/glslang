@@ -70,6 +70,30 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
     int width = 0;
     if (basicTypeOp == Op::OpTypeFloat || basicTypeOp == Op::OpTypeInt)
         width = getScalarTypeWidth(typeId);
+    // BFloat16KHR has its own capability. Width-only post-processing must not
+    // accidentally request IEEE Float16 for BF16 values or nested composites.
+    auto contains_bfloat16 = [&](auto&& self, Id id) -> bool {
+        const auto& type = *module.getInstruction(id);
+        switch (type.getOpCode()) {
+        case Op::OpTypeFloat:
+            return type.getNumOperands() == 2 &&
+                   type.getImmediateOperand(1) == FPEncoding::BFloat16KHR;
+        case Op::OpTypeStruct:
+            for (int m = 0; m < type.getNumOperands(); ++m) {
+                if (self(self, type.getIdOperand(m)))
+                    return true;
+            }
+            return false;
+        case Op::OpTypeVector:
+        case Op::OpTypeMatrix:
+        case Op::OpTypeArray:
+        case Op::OpTypeRuntimeArray:
+            return self(self, getContainedTypeId(id));
+        default:
+            return false;
+        }
+    };
+    const bool has_bfloat16 = contains_bfloat16(contains_bfloat16, typeId);
 
     // Do opcode-specific checks
     switch (inst.getOpCode()) {
@@ -80,7 +104,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
                 addCapability(Capability::Int8);
             if (containsType(typeId, Op::OpTypeInt, 16))
                 addCapability(Capability::Int16);
-            if (containsType(typeId, Op::OpTypeFloat, 16))
+            if (!has_bfloat16 && containsType(typeId, Op::OpTypeFloat, 16))
                 addCapability(Capability::Float16);
         } else {
             StorageClass storageClass = StorageClass::Max;
@@ -114,7 +138,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
                 default:
                     if (basicTypeOp == Op::OpTypeInt)
                         addCapability(Capability::Int16);
-                    if (basicTypeOp == Op::OpTypeFloat)
+                    if (basicTypeOp == Op::OpTypeFloat && !has_bfloat16)
                         addCapability(Capability::Float16);
                     break;
                 }
@@ -141,7 +165,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
                 }
             }
             if (!foundStorage) {
-                if (containsType(typeId, Op::OpTypeFloat, 16))
+                if (!has_bfloat16 && containsType(typeId, Op::OpTypeFloat, 16))
                     addCapability(Capability::Float16);
                 if (containsType(typeId, Op::OpTypeInt, 16))
                     addCapability(Capability::Int16);
@@ -173,7 +197,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
         case GLSLstd450InterpolateAtCentroid:
         case GLSLstd450InterpolateAtSample:
         case GLSLstd450InterpolateAtOffset:
-            if (getSpvVersion() < spv::Spv_1_3 && containsType(typeId, Op::OpTypeFloat, 16))
+            if (getSpvVersion() < spv::Spv_1_3 && !has_bfloat16 && containsType(typeId, Op::OpTypeFloat, 16))
                 addExtension(spv::E_SPV_AMD_gpu_shader_half_float);
             break;
         default:
@@ -185,7 +209,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
             else if (width == 8)
                 addCapability(Capability::Int8);
         } else if (basicTypeOp == Op::OpTypeFloat) {
-            if (width == 16)
+            if (width == 16 && !has_bfloat16)
                 addCapability(Capability::Float16);
         }
         break;
@@ -209,7 +233,7 @@ void Builder::postProcessType(const Instruction& inst, Id typeId)
             else if (width == 64)
                 addCapability(Capability::Int64);
         } else if (basicTypeOp == Op::OpTypeFloat) {
-            if (width == 16)
+            if (width == 16 && !has_bfloat16)
                 addCapability(Capability::Float16);
             else if (width == 64)
                 addCapability(Capability::Float64);
