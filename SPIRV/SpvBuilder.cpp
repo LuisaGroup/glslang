@@ -1887,7 +1887,7 @@ Id Builder::findScalarConstant(Op typeClass, Op opcode, Id typeId, unsigned valu
 {
     ScalarConstantKey key{ enumCast(typeClass), enumCast(opcode), typeId, value, 0 };
     auto it = groupedScalarConstantResultIDs.find(key);
-    return (it != groupedScalarConstantResultIDs.end()) ? it->second : 0;
+    return (it != groupedScalarConstantResultIDs.end()) ? it->second : NoResult;
 }
 
 // Version of findScalarConstant (see above) for scalars that take two operands (e.g. a 'double' or 'int64').
@@ -1895,7 +1895,7 @@ Id Builder::findScalarConstant(Op typeClass, Op opcode, Id typeId, unsigned v1, 
 {
     ScalarConstantKey key{ enumCast(typeClass), enumCast(opcode), typeId, v1, v2 };
     auto it = groupedScalarConstantResultIDs.find(key);
-    return (it != groupedScalarConstantResultIDs.end()) ? it->second : 0;
+    return (it != groupedScalarConstantResultIDs.end()) ? it->second : NoResult;
 }
 
 // Return true if consuming 'opcode' means consuming a constant.
@@ -2699,7 +2699,7 @@ Function* Builder::makeFunctionEntry(Decoration precision, Id returnType, const 
 {
     // Make the function and initial instructions in it
     Id typeId = makeFunctionType(returnType, paramTypes);
-    Id firstParamId = paramTypes.size() == 0 ? 0 : getUniqueIds((int)paramTypes.size());
+    Id firstParamId = paramTypes.size() == 0 ? NoType : getUniqueIds((int)paramTypes.size());
     Id funcId = getUniqueId();
     Function* function = new Function(funcId, returnType, typeId, firstParamId, linkType, name, module);
 
@@ -3775,6 +3775,25 @@ Id Builder::createBuiltinCall(Id resultType, Id builtins, int entryPoint, const 
     return inst->getResultId();
 }
 
+// Comments in header
+Id Builder::createBuiltinCall(Id resultType, Id builtins, int entryPoint, const std::vector<IdImmediate>& args)
+{
+    Instruction* inst = new Instruction(getUniqueId(), resultType, Op::OpExtInst);
+    inst->reserveOperands(args.size() + 2);
+    inst->addIdOperand(builtins);
+    inst->addImmediateOperand(entryPoint);
+    for (auto it = args.cbegin(); it != args.cend(); ++it) {
+        if (it->isId)
+            inst->addIdOperand(it->word);
+        else
+            inst->addImmediateOperand(it->word);
+    }
+
+    addInstruction(std::unique_ptr<Instruction>(inst));
+
+    return inst->getResultId();
+}
+
 // Accept all parameters needed to create a texture instruction.
 // Create the correct instruction based on the inputs, and make the call.
 Id Builder::createTextureCall(Decoration precision, Id resultType, bool sparse, bool fetch, bool proj, bool gather,
@@ -4752,9 +4771,12 @@ void Builder::accessChainStore(Id rvalue, Decoration nonUniform, spv::MemoryAcce
         // extract and insert elements to perform writeMask and/or swizzle.
         if (accessChain.swizzle.size() > 0) {
             // The read-modify-write load hits the same pointer as the store, so it needs the
-            // same memory operands. In particular a PhysicalStorageBuffer access must carry
-            // Aligned, and postProcess() expects the operand to be present to fix up.
-            Id tempBaseId = createLoad(base, spv::NoPrecision, memoryAccess, scope, alignment);
+            // same memory operands (while flipping MakePointerAvailable to Visible).
+            // In particular a PhysicalStorageBuffer access must carry Aligned.
+            auto loadAccess = memoryAccess & ~spv::MemoryAccessMask::MakePointerAvailableKHR;
+            if (anySet(memoryAccess, spv::MemoryAccessMask::MakePointerAvailableKHR))
+                loadAccess = loadAccess | spv::MemoryAccessMask::MakePointerVisibleKHR;
+            Id tempBaseId = createLoad(base, spv::NoPrecision, loadAccess, scope, alignment);
             source = createLvalueSwizzle(getTypeId(tempBaseId), tempBaseId, source, accessChain.swizzle);
         }
 

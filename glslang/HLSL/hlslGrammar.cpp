@@ -2560,6 +2560,11 @@ bool HlslGrammar::acceptTextureBufferType(TType& type)
         return false;
     }
 
+    if (! templateType.isStruct()) {
+        parseContext.error(token.loc, "non-structure type in TextureBuffer", "", "");
+        return false;
+    }
+
     templateType.getQualifier().storage = EvqBuffer;
     templateType.getQualifier().readonly = true;
 
@@ -3509,7 +3514,11 @@ bool HlslGrammar::acceptPostfixExpression(TIntermTyped*& node)
         case EOpPostDecrement:
             // DEC_OP
             node = intermediate.addUnaryMath(postOp, node, loc);
+            if (node == nullptr)
+                return false;
             node = parseContext.handleLvalue(loc, "unary operator", node);
+            if (node == nullptr)
+                return false;
             break;
         default:
             assert(0);
@@ -4297,6 +4306,7 @@ void HlslGrammar::acceptArraySpecifier(TArraySizes*& arraySizes)
 
         if (! acceptTokenClass(EHTokRightBracket)) {
             expected("]");
+            arraySizes = nullptr;
             return;
         }
 

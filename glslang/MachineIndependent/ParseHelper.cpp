@@ -1620,6 +1620,10 @@ TIntermTyped* TParseContext::handleFunctionCall(const TSourceLoc& loc, TFunction
                 TType longVectorResultType(EbtVoid);
                 handleLongVectorBuiltin(loc, fnCandidate, &longVectorResultType, arguments);
                 result->setType(longVectorResultType);
+                // The type was copied from an argument; a const argument must not make
+                // an unfolded call look like a constant.
+                if (result->getAsConstantUnion() == nullptr)
+                    result->getWritableType().getQualifier().makeTemporary();
             }
 
             // Convert 'out' arguments.  If it was a constant folded built-in, it won't be an aggregate anymore.
@@ -1640,10 +1644,15 @@ TIntermTyped* TParseContext::handleFunctionCall(const TSourceLoc& loc, TFunction
 
             if (result->getAsTyped()->getType().isCoopVecOrLongVector() &&
                !result->getAsTyped()->getType().isParameterized()) {
-                if (auto unaryNode = result->getAsUnaryNode())
-                    result->setType(unaryNode->getOperand()->getAsTyped()->getType());
-                else
-                    result->setType(result->getAsAggregate()->getSequence()[0]->getAsTyped()->getType());
+                // Take the type parameters from the first argument. The result may already
+                // be a folded constant rather than an aggregate, and a const argument must
+                // not make an unfolded call look like a constant.
+                const TIntermTyped* firstArg = fnCandidate->getParamCount() == 1 || !arguments->getAsAggregate()
+                                                   ? arguments->getAsTyped()
+                                                   : arguments->getAsAggregate()->getSequence()[0]->getAsTyped();
+                result->setType(firstArg->getType());
+                if (result->getAsConstantUnion() == nullptr)
+                    result->getWritableType().getQualifier().makeTemporary();
             }
 
             if (fnCandidate->getBuiltInOp() == EOpConstructSaturated) {
@@ -1959,7 +1968,8 @@ void TParseContext::handleCoopMat2FunctionCall(const TSourceLoc& loc, const TFun
             TArraySizes *arraySizes = new TArraySizes;
             for (uint32_t i = 0; i < 2; ++i) {
                 TIntermNode *param {};
-                if (arguments->getAsConstantUnion()) {
+                if (fnCandidate->getParamCount() == 1) {
+                    // a single argument is not wrapped in an aggregate
                     if (i == 0) {
                         param = arguments;
                     }
@@ -1971,13 +1981,11 @@ void TParseContext::handleCoopMat2FunctionCall(const TSourceLoc& loc, const TFun
                     }
                 }
                 if (param) {
-                    if (param->getAsTyped()->getType().getQualifier().isSpecConstant()) {
-                        uint32_t value = param->getAsSymbolNode()->getConstArray()[0].getIConst();
-                        arraySizes->addInnerSize(value, param->getAsTyped());
-                    } else {
-                        uint32_t value = param->getAsConstantUnion()->getConstArray()[0].getIConst();
-                        arraySizes->addInnerSize(value);
-                    }
+                    // the arguments become the type parameters of the result, so
+                    // they must be constants or specialization constants
+                    TArraySize size;
+                    arraySizeCheck(loc, param->getAsTyped(), size, "type parameter", true);
+                    arraySizes->addInnerSize(size);
                 } else {
                     // gl_CooperativeMatrixClampModeUndefined
                     arraySizes->addInnerSize(0);
@@ -1997,7 +2005,8 @@ void TParseContext::handleCoopMat2FunctionCall(const TSourceLoc& loc, const TFun
             TArraySizes *arraySizes = new TArraySizes;
             for (uint32_t i = 0; i < 7; ++i) {
                 TIntermNode *param {};
-                if (arguments->getAsConstantUnion()) {
+                if (fnCandidate->getParamCount() == 1) {
+                    // a single argument is not wrapped in an aggregate
                     if (i == 0) {
                         param = arguments;
                     }
@@ -2009,13 +2018,11 @@ void TParseContext::handleCoopMat2FunctionCall(const TSourceLoc& loc, const TFun
                     }
                 }
                 if (param) {
-                    if (param->getAsTyped()->getType().getQualifier().isSpecConstant()) {
-                        uint32_t value = param->getAsSymbolNode()->getConstArray()[0].getIConst();
-                        arraySizes->addInnerSize(value, param->getAsTyped());
-                    } else {
-                        uint32_t value = param->getAsConstantUnion()->getConstArray()[0].getIConst();
-                        arraySizes->addInnerSize(value);
-                    }
+                    // the arguments become the type parameters of the result, so
+                    // they must be constants or specialization constants
+                    TArraySize size;
+                    arraySizeCheck(loc, param->getAsTyped(), size, "type parameter", true);
+                    arraySizes->addInnerSize(size);
                 } else {
                     uint32_t value = 0;
                     if (i >= 2) {
@@ -4024,6 +4031,9 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
         } else {
             error(loc, errMsg, fnCandidate.getName().c_str(), "");
         }
+        if ((callNode.getOp() == EOpCooperativeMatrixLoad || callNode.getOp() == EOpCooperativeMatrixStore) &&
+            !(*argp)[4]->getAsTyped()->getType().getQualifier().isConstant())
+            error(loc, "argument must be compile-time constant", "matrixLayout", "");
     }
     break;
     case EOpCooperativeMatrixTransposeNV:
@@ -4150,7 +4160,7 @@ void TParseContext::builtInOpCheck(const TSourceLoc& loc, const TFunction& fnCan
             if (!opArg) {
                 error(loc, "tensor operands argument must be a constant integral expression", "tensorOps", "");
             }
-            const unsigned int ops = opArg ? opArg->getConstArray()[0].getUConst() : 0;
+            const unsigned int ops = opArg ? opArg->getConstArray()[0].getUConst() : 0u;
             const int gl_TensorOperandsOutOfBoundsValueARM = 0x2;
             if (ops & gl_TensorOperandsOutOfBoundsValueARM) {
                 // Out-of-bounds values can only be used with reads.
@@ -6210,6 +6220,12 @@ void TParseContext::arraySizesCheck(const TSourceLoc& loc, const TQualifier& qua
     if (qualifier.storage == EvqBuffer && lastMember)
         return;
 
+    // GL_EXT_descriptor_heap arrays, and the last member of a GL_EXT_structured_descriptor_heap heap block
+    if (qualifier.layoutDescriptorHeap)
+        return;
+    if ((qualifier.storage == EvqResourceHeap || qualifier.storage == EvqSamplerHeap) && lastMember)
+        return;
+
     if (qualifier.storage == EvqUniform && lastMember && extensionTurnedOn(E_GL_EXT_uniform_buffer_unsized_array))
         return;
 
@@ -7185,12 +7201,88 @@ void TParseContext::limitCheck(const TSourceLoc& loc, int value, const char* lim
 //
 // Do any additional error checking, etc., once we know the parsing is done.
 //
+// GL_EXT_mesh_shader: "mesh shaders do not permit read access on output variables".
+// Walks the tree tracking whether each output is being written (an l-value or an 'out'
+// argument) or read, and reports every read.
+class TMeshOutputReadTraverser : public TIntermTraverser {
+public:
+    explicit TMeshOutputReadTraverser(TParseContext& parseContext) : parseContext(parseContext) { }
+
+    void visitSymbol(TIntermSymbol* node) override
+    {
+        if (! writing && node->getQualifier().storage == EvqVaryingOut)
+            parseContext.error(node->getLoc(), "mesh shader outputs can only be written, not read",
+                               node->getName().c_str(), "");
+    }
+
+    bool visitBinary(TVisit, TIntermBinary* node) override
+    {
+        switch (node->getOp()) {
+        case EOpAssign:
+            traverseAs(node->getLeft(), true);
+            traverseAs(node->getRight(), false);
+            return false;
+        case EOpIndexDirect:
+        case EOpIndexIndirect:
+        case EOpIndexDirectStruct:
+        case EOpVectorSwizzle:
+        case EOpMatrixSwizzle:
+            // Keep the base in the current mode; the index itself is always read.
+            traverseAs(node->getLeft(), writing);
+            traverseAs(node->getRight(), false);
+            return false;
+        default:
+            // Compound assignments read their left operand too.
+            traverseAs(node->getLeft(), false);
+            traverseAs(node->getRight(), false);
+            return false;
+        }
+    }
+
+    bool visitUnary(TVisit, TIntermUnary* node) override
+    {
+        traverseAs(node->getOperand(), false);
+        return false;
+    }
+
+    bool visitAggregate(TVisit, TIntermAggregate* node) override
+    {
+        if (node->getOp() == EOpLinkerObjects)
+            return false;
+
+        const TIntermSequence& sequence = node->getSequence();
+        const TQualifierList& qualifiers = node->getQualifierList();
+        for (size_t i = 0; i < sequence.size(); ++i)
+            traverseAs(sequence[i], i < qualifiers.size() && qualifiers[i] == EvqOut);
+        return false;
+    }
+
+private:
+    void traverseAs(TIntermNode* node, bool write)
+    {
+        if (node == nullptr)
+            return;
+        bool saved = writing;
+        writing = write;
+        node->traverse(this);
+        writing = saved;
+    }
+
+    TParseContext& parseContext;
+    bool writing = false;
+};
+
 void TParseContext::finish()
 {
     TParseContextBase::finish();
 
     if (parsingBuiltins)
         return;
+
+    if (language == EShLangMesh && extensionTurnedOn(E_GL_EXT_mesh_shader) && intermediate.getTreeRoot() != nullptr) {
+        TMeshOutputReadTraverser meshOutputReads(*this);
+        intermediate.getTreeRoot()->traverse(&meshOutputReads);
+    }
 
     // Forward builtin alias to AST for later use
     intermediate.setBuiltinAliasLookup(symbolTable.collectBuiltinAlias());
@@ -7746,9 +7838,13 @@ void TParseContext::setLayoutQualifier(const TSourceLoc& loc, TPublicType& publi
         return;
     } else if (id == "location") {
         profileRequires(loc, EEsProfile, 300, nullptr, "location");
-        const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location };
-        // GL_ARB_explicit_uniform_location requires 330 or GL_ARB_explicit_attrib_location we do not need to add it here
-        profileRequires(loc, ~EEsProfile, 330, 2, exts, "location");
+        // Generating SPIR-V requires a location on every user input and output, so allow one at any desktop version
+        if (spvVersion.spv == 0) {
+            const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location };
+            // GL_ARB_explicit_uniform_location requires 330 or GL_ARB_explicit_attrib_location,
+            // we do not need to add it here
+            profileRequires(loc, ~EEsProfile, 330, 2, exts, "location");
+        }
         if ((unsigned int)value >= TQualifier::layoutLocationEnd)
             error(loc, "location is too large", id.c_str(), "");
         else
@@ -8396,7 +8492,7 @@ void TParseContext::layoutTypeCheck(const TSourceLoc& loc, const TType& type)
         switch (qualifier.storage) {
         case EvqVaryingIn:
         case EvqVaryingOut:
-            if (type.getBasicType() == EbtBlock)
+            if (type.getBasicType() == EbtBlock && spvVersion.spv == 0)
                 profileRequires(loc, ECoreProfile | ECompatibilityProfile, 440, E_GL_ARB_enhanced_layouts, "location qualifier on in/out block");
             if (type.getQualifier().isTaskMemory())
                 error(loc, "cannot apply to taskNV in/out blocks", "location", "");
@@ -8674,10 +8770,12 @@ void TParseContext::layoutQualifierCheck(const TSourceLoc& loc, const TQualifier
                 requireStage(loc, (EShLanguageMask)~EShLangComputeMask, feature);
             if (language == EShLangVertex) {
                 const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location };
-                profileRequires(loc, ~EEsProfile, 330, 2, exts, feature);
+                if (spvVersion.spv == 0)
+                    profileRequires(loc, ~EEsProfile, 330, 2, exts, feature);
                 profileRequires(loc, EEsProfile, 300, nullptr, feature);
             } else {
-                profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
+                if (spvVersion.spv == 0)
+                    profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
                 profileRequires(loc, EEsProfile, 310, nullptr, feature);
             }
             break;
@@ -8691,10 +8789,12 @@ void TParseContext::layoutQualifierCheck(const TSourceLoc& loc, const TQualifier
                 requireStage(loc, (EShLanguageMask)~EShLangComputeMask, feature);
             if (language == EShLangFragment) {
                 const char* exts[2] = { E_GL_ARB_separate_shader_objects, E_GL_ARB_explicit_attrib_location };
-                profileRequires(loc, ~EEsProfile, 330, 2, exts, feature);
+                if (spvVersion.spv == 0)
+                    profileRequires(loc, ~EEsProfile, 330, 2, exts, feature);
                 profileRequires(loc, EEsProfile, 300, nullptr, feature);
             } else {
-                profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
+                if (spvVersion.spv == 0)
+                    profileRequires(loc, ~EEsProfile, 410, E_GL_ARB_separate_shader_objects, feature);
                 profileRequires(loc, EEsProfile, 310, nullptr, feature);
             }
             break;
@@ -9397,6 +9497,10 @@ void TParseContext::declareTypeDefaults(const TSourceLoc& loc, const TPublicType
         error(loc, "expect an array name", "", "");
     }
 
+    // A declaration without a variable name declares no payload, so the qualifier would be silently dropped
+    if (publicType.qualifier.storage == EvqtaskPayloadSharedEXT)
+        error(loc, "can only be used when declaring a variable", "taskPayloadSharedEXT", "");
+
     if (publicType.qualifier.hasLayout() && !publicType.qualifier.hasBufferReference())
         warn(loc, "useless application of layout qualifier", "layout", "");
 }
@@ -9466,7 +9570,7 @@ void TParseContext::typeParametersCheck(const TSourceLoc& loc, const TPublicType
         if (publicType.typeParameters && publicType.typeParameters->arraySizes->getNumDims() < 7) {
             uint32_t numDims = publicType.typeParameters->arraySizes->getNumDims();
             while (numDims < 7) {
-                uint32_t dim = (numDims == 1) ? 0 : (numDims - 2);
+                uint32_t dim = (numDims == 1) ? 0u : (numDims - 2);
                 publicType.typeParameters->arraySizes->addInnerSize(dim);
                 numDims++;
             }
@@ -11359,7 +11463,9 @@ TIntermNode* TParseContext::declareBlock(const TSourceLoc& loc, TTypeList& typeL
             case EvqVaryingIn:
             case EvqVaryingOut:
                 requireProfile(memberLoc, ECoreProfile | ECompatibilityProfile | EEsProfile, feature);
-                profileRequires(memberLoc, ECoreProfile | ECompatibilityProfile, 440, E_GL_ARB_enhanced_layouts, feature);
+                if (spvVersion.spv == 0)
+                    profileRequires(memberLoc, ECoreProfile | ECompatibilityProfile, 440, E_GL_ARB_enhanced_layouts,
+                                    feature);
                 profileRequires(memberLoc, EEsProfile, 320, Num_AEP_shader_io_blocks, AEP_shader_io_blocks, feature);
                 memberWithLocation = true;
                 break;
@@ -11433,6 +11539,13 @@ TIntermNode* TParseContext::declareBlock(const TSourceLoc& loc, TTypeList& typeL
 
         if (currentBlockQualifier.storage != EvqBuffer)
             error(loc, "can only be used with buffer", "buffer_reference", "");
+
+        if (currentBlockQualifier.bufferReferenceNeedsVulkanMemoryModel())
+            intermediate.setUseVulkanMemoryModel();
+        for (const auto& member : typeList)
+            if (member.type->getQualifier().bufferReferenceNeedsVulkanMemoryModel())
+                intermediate.setUseVulkanMemoryModel();
+
 
         // Create the block reference type. If it was forward-declared, detect that
         // as a referent struct type with no members. Replace the referent type with
@@ -12497,10 +12610,10 @@ const TTypeList* TParseContext::recordStructCopy(TStructRecord& record, const TT
     size_t originHash = 0, tmpHash = 0;
     std::hash<size_t> hasher;
     for (size_t i = 0; i < memberCount; i++) {
-        size_t originMemberHash = hasher(originType->getStruct()->at(i).type->getQualifier().layoutPacking +
-                                         originType->getStruct()->at(i).type->getQualifier().layoutMatrix);
-        size_t tmpMemberHash = hasher(tmpType->getStruct()->at(i).type->getQualifier().layoutPacking +
-                                      tmpType->getStruct()->at(i).type->getQualifier().layoutMatrix);
+        size_t originMemberHash = hasher((size_t)originType->getStruct()->at(i).type->getQualifier().layoutPacking +
+                                         (size_t)originType->getStruct()->at(i).type->getQualifier().layoutMatrix);
+        size_t tmpMemberHash = hasher((size_t)tmpType->getStruct()->at(i).type->getQualifier().layoutPacking +
+                                     (size_t)tmpType->getStruct()->at(i).type->getQualifier().layoutMatrix);
         originHash = hasher((originHash ^ originMemberHash) << 1);
         tmpHash = hasher((tmpHash ^ tmpMemberHash) << 1);
     }

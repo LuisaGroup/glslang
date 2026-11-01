@@ -1771,8 +1771,14 @@ void HlslParseContext::handleEntryPointAttributes(const TSourceLoc& loc, const T
                 error(loc, "expected at most three arguments", "numthreads", "");
                 break;
             }
-            for (int lid = 0; lid < int(sequence.size()); ++lid)
-                intermediate.setLocalSize(lid, sequence[lid]->getAsConstantUnion()->getConstArray()[0].getIConst());
+            for (int lid = 0; lid < int(sequence.size()); ++lid) {
+                int dim;
+                if (! it->getInt(dim, lid)) {
+                    error(loc, "argument must be a constant integer expression", "numthreads", "");
+                    break;
+                }
+                intermediate.setLocalSize(lid, dim);
+            }
             break;
         }
         case EatInstance:
@@ -2106,6 +2112,13 @@ TIntermNode* HlslParseContext::transformEntryPoint(const TSourceLoc& loc, TFunct
     handleEntryPointAttributes(loc, attributes);
 
     // entry point logic...
+
+    // Unnamed parameters are legal, but the shader in/out variables and the synthesized
+    // call below are built from each parameter's name, so give unnamed ones an internal name.
+    for (int i = 0; i < userFunction.getParamCount(); i++) {
+        if (userFunction[i].name == nullptr)
+            userFunction[i].name = NewPoolTString(("@param" + String(i)).c_str());
+    }
 
     // Move parameters and return value to shader in/out
     TVariable* entryPointOutput; // gets created in remapEntryPointIO
