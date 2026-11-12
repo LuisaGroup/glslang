@@ -1083,7 +1083,7 @@ bool HlslParseContext::isBuiltInMethod(const TSourceLoc&, TIntermTyped* base, co
 
     if (base->getType().getBasicType() == EbtSampler) {
         return true;
-    } else if (isStructBufferType(base->getType()) && isStructBufferMethod(field)) {
+    } else if (! base->isArray() && isStructBufferType(base->getType()) && isStructBufferMethod(field)) {
         return true;
     } else if (field == "Append" ||
                field == "RestartStrip") {
@@ -7070,8 +7070,9 @@ TSymbol* HlslParseContext::redeclareBuiltinVariable(const TSourceLoc& /*loc*/, c
 //
 TIntermTyped* HlslParseContext::indexStructBufferContent(const TSourceLoc& loc, TIntermTyped* buffer) const
 {
-    // Bail out if not a struct buffer
-    if (buffer == nullptr || ! isStructBufferType(buffer->getType()))
+    // Bail out if not a struct buffer.  An array of struct buffers is not itself a buffer:
+    // an element has to be selected before its content can be indexed.
+    if (buffer == nullptr || buffer->getType().isArray() || ! isStructBufferType(buffer->getType()))
         return nullptr;
 
     // Runtime sized array is always the last element.
@@ -10347,10 +10348,19 @@ void HlslParseContext::finalizeAppendMethods()
 
     // Patch append sequences, now that we know the stream output symbol.
     for (auto append = gsAppends.begin(); append != gsAppends.end(); ++append) {
-        append->node->getSequence()[0] =
-            handleAssign(append->loc, EOpAssign,
-                         intermediate.addSymbol(*gsStreamOutput, append->loc),
-                         append->node->getSequence()[0]->getAsTyped());
+        TIntermTyped* data = append->node->getSequence()[0]->getAsTyped();
+
+        // A struct output is copied member-wise, which requires the argument to have the same type.
+        TIntermTyped* assign = nullptr;
+        if (! gsStreamOutput->getType().isStruct() || gsStreamOutput->getType() == data->getType())
+            assign = handleAssign(append->loc, EOpAssign, intermediate.addSymbol(*gsStreamOutput, append->loc), data);
+
+        if (assign == nullptr) {
+            error(append->loc, "argument type does not match stream output type", "Append", "");
+            continue;
+        }
+
+        append->node->getSequence()[0] = assign;
     }
 }
 
