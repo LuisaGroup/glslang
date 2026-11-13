@@ -139,7 +139,7 @@ protected:
 void SpirvStream::validate()
 {
     size = (int)stream.size();
-    if (size < 4)
+    if (size < 5)
         Kill(out, "stream is too short");
 
     // Magic number
@@ -357,6 +357,9 @@ void SpirvStream::outputMask(OperandClass operandClass, unsigned mask)
 
 void SpirvStream::disassembleImmediates(int numOperands)
 {
+    if (word + numOperands > size)
+        Kill(out, "operand runs off the end of the stream");
+
     for (int i = 0; i < numOperands; ++i) {
         out << stream[word++];
         if (i < numOperands - 1)
@@ -366,6 +369,9 @@ void SpirvStream::disassembleImmediates(int numOperands)
 
 void SpirvStream::disassembleIds(int numOperands)
 {
+    if (word + numOperands > size)
+        Kill(out, "operand runs off the end of the stream");
+
     for (int i = 0; i < numOperands; ++i) {
         outputId(stream[word++]);
         if (i < numOperands - 1)
@@ -442,6 +448,27 @@ void SpirvStream::disassembleInstruction(Id resultId, Id /*typeId*/, Op opCode, 
     }
 
     out << (OpcodeString((int)opCode) + 2);  // leave out the "Op"
+
+    // Opcodes handled specially below read fixed operands without consulting numOperands
+    int minOperands = 0;
+    switch (opCode) {
+    case Op::OpLoopMerge:
+    case Op::OpSelectionMerge:
+    case Op::OpTypeInt:
+    case Op::OpTypeFloat:
+        minOperands = 1;
+        break;
+    case Op::OpTypeVector:
+        minOperands = 2;
+        break;
+    case Op::OpTypeImage:
+        minOperands = 7;
+        break;
+    default:
+        break;
+    }
+    if (numOperands < minOperands)
+        Kill(out, "instruction has too few operands");
 
     if (opCode == Op::OpLoopMerge || opCode == Op::OpSelectionMerge)
         nextNestedControl = stream[word];
